@@ -35,6 +35,8 @@
  */
 
 #include "crc16.h"
+#include <string.h>
+#include "xmodem.h"
 
 #define SOH  0x01
 #define STX  0x02
@@ -71,13 +73,13 @@ static int check(int crc, const unsigned char *buf, int sz)
 
 static void flushinput(void)
 {
-	while (_inbyte(((DLY_1S)*3)>>1) >= 0)
+	//while (_inbyte(((DLY_1S)*3)>>1) >= 0)
 		;
 }
 
-int xmodemReceive(unsigned char *dest, int destsz)
+int xmodemReceive(void (*receiveCallback)(char *data, int length, char *userData), void *userData)
 {
-	unsigned char xbuff[1030]; /* 1024 for XModem 1k + 3 head chars + 2 crc + nul */
+	static unsigned char xbuff[1030]; /* 1024 for XModem 1k + 3 head chars + 2 crc + nul */
 	unsigned char *p;
 	int bufsz, crc = 0;
 	unsigned char trychar = 'C';
@@ -87,7 +89,10 @@ int xmodemReceive(unsigned char *dest, int destsz)
 
 	for(;;) {
 		for( retry = 0; retry < 16; ++retry) {
-			if (trychar) _outbyte(trychar);
+			if (trychar) {
+                            _outbyte(trychar);
+                            _flushoutput();
+                        }
 			if ((c = _inbyte((DLY_1S)<<1)) >= 0) {
 				switch (c) {
 				case SOH:
@@ -99,11 +104,13 @@ int xmodemReceive(unsigned char *dest, int destsz)
 				case EOT:
 					flushinput();
 					_outbyte(ACK);
+                                        _flushoutput();
 					return len; /* normal end */
 				case CAN:
 					if ((c = _inbyte(DLY_1S)) == CAN) {
 						flushinput();
 						_outbyte(ACK);
+                                                _flushoutput();
 						return -1; /* canceled by remote */
 					}
 					break;
@@ -117,6 +124,7 @@ int xmodemReceive(unsigned char *dest, int destsz)
 		_outbyte(CAN);
 		_outbyte(CAN);
 		_outbyte(CAN);
+                _flushoutput();
 		return -2; /* sync error */
 
 	start_recv:
@@ -125,7 +133,8 @@ int xmodemReceive(unsigned char *dest, int destsz)
 		p = xbuff;
 		*p++ = c;
 		for (i = 0;  i < (bufsz+(crc?1:0)+3); ++i) {
-			if ((c = _inbyte(DLY_1S)) < 0) goto reject;
+			if ((c = _inbyte(DLY_1S)) < 0) 
+                            goto reject;
 			*p++ = c;
 		}
 
@@ -133,12 +142,13 @@ int xmodemReceive(unsigned char *dest, int destsz)
 			(xbuff[1] == packetno || xbuff[1] == (unsigned char)packetno-1) &&
 			check(crc, &xbuff[3], bufsz)) {
 			if (xbuff[1] == packetno)	{
-				register int count = destsz - len;
-				if (count > bufsz) count = bufsz;
-				if (count > 0) {
-					memcpy (&dest[len], &xbuff[3], count);
-					len += count;
-				}
+                                receiveCallback(&xbuff[3], p-(xbuff + 3), userData);
+				//register int count = destsz - len;
+				//if (count > bufsz) count = bufsz;
+				//if (count > 0) {
+				//	memcpy (&dest[len], &xbuff[3], count);
+				//	len += count;
+				//}
 				++packetno;
 				retrans = MAXRETRANS+1;
 			}
@@ -147,15 +157,20 @@ int xmodemReceive(unsigned char *dest, int destsz)
 				_outbyte(CAN);
 				_outbyte(CAN);
 				_outbyte(CAN);
+                                _flushoutput();
 				return -3; /* too many retry error */
 			}
 			_outbyte(ACK);
+                        _flushoutput();
 			continue;
 		}
 	reject:
 		flushinput();
 		_outbyte(NAK);
+                _flushoutput();
 	}
+
+        return 0;
 }
 
 int xmodemTransmit(unsigned char *src, int srcsz)
@@ -179,6 +194,7 @@ int xmodemTransmit(unsigned char *src, int srcsz)
 				case CAN:
 					if ((c = _inbyte(DLY_1S)) == CAN) {
 						_outbyte(ACK);
+                                                _flushoutput();
 						flushinput();
 						return -1; /* canceled by remote */
 					}
@@ -191,6 +207,7 @@ int xmodemTransmit(unsigned char *src, int srcsz)
 		_outbyte(CAN);
 		_outbyte(CAN);
 		_outbyte(CAN);
+                _flushoutput();
 		flushinput();
 		return -2; /* no sync */
 
@@ -225,6 +242,9 @@ int xmodemTransmit(unsigned char *src, int srcsz)
 					for (i = 0; i < bufsz+4+(crc?1:0); ++i) {
 						_outbyte(xbuff[i]);
 					}
+                                        
+                                        _flushoutput();
+
 					if ((c = _inbyte(DLY_1S)) >= 0 ) {
 						switch (c) {
 						case ACK:
@@ -234,6 +254,7 @@ int xmodemTransmit(unsigned char *src, int srcsz)
 						case CAN:
 							if ((c = _inbyte(DLY_1S)) == CAN) {
 								_outbyte(ACK);
+                                                                _flushoutput();
 								flushinput();
 								return -1; /* canceled by remote */
 							}
@@ -248,11 +269,13 @@ int xmodemTransmit(unsigned char *src, int srcsz)
 				_outbyte(CAN);
 				_outbyte(CAN);
 				flushinput();
+                                _flushoutput();
 				return -4; /* xmit error */
 			}
 			else {
 				for (retry = 0; retry < 10; ++retry) {
 					_outbyte(EOT);
+                                        _flushoutput();
 					if ((c = _inbyte((DLY_1S)<<1)) == ACK) break;
 				}
 				flushinput();
